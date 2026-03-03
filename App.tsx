@@ -199,9 +199,11 @@ export default function App() {
               <div className="relative rounded-2xl overflow-hidden shadow-2xl bg-black aspect-video mb-8 group">
                 <iframe 
                   className="absolute inset-0 w-full h-full"
-                  src="https://www.youtube.com/embed/v4D77o9_3tA?rel=0&modestbranding=1" 
-                  title="Vídeo de Apresentação"
+                  src="https://www.youtube.com/embed/b_dPrk4g_ok?si=-aPuVQsCpOyRcW5E" 
+                  title="YouTube video player"
+                  frameBorder="0"
                   allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" 
+                  referrerPolicy="strict-origin-when-cross-origin"
                   allowFullScreen
                 ></iframe>
               </div>
