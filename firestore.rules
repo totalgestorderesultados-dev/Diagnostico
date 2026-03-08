@@ -1,0 +1,55 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: submissions
+    // Document ID: auto-generated or submission ID
+    // Fields:
+    //   - id: string (required)
+    //   - submittedAt: string (ISO date, required)
+    //   - userData: map (required)
+    //     - name: string (required)
+    //     - phone: string (required)
+    //   - answers: map (required, questionId -> number)
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && 
+        (request.auth.token.email == "edsonfinanceiro2017@gmail.com" && request.auth.token.email_verified == true);
+    }
+
+    function isValidSubmission(data) {
+      return data.keys().hasAll(['id', 'submittedAt', 'userData', 'answers']) &&
+             data.id is string &&
+             data.submittedAt is string &&
+             data.userData is map &&
+             data.userData.name is string &&
+             data.userData.name.size() > 0 &&
+             data.userData.name.size() < 100 &&
+             data.userData.phone is string &&
+             data.userData.phone.size() > 0 &&
+             data.userData.phone.size() < 30 &&
+             data.answers is map;
+    }
+
+    match /submissions/{submissionId} {
+      // Allow anyone to create a submission (even unauthenticated for public quiz, 
+      // but we'll use anonymous auth in the app to be safer)
+      allow create: if isAuthenticated() && isValidSubmission(request.resource.data);
+      
+      // Only admin can read, update or delete submissions
+      allow read, update, delete: if isAdmin();
+    }
+  }
+}

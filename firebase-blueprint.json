@@ -1,0 +1,32 @@
+{
+  "entities": {
+    "Submission": {
+      "title": "Submission",
+      "description": "A user's quiz submission",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "submittedAt": { "type": "string", "format": "date-time" },
+        "userData": {
+          "type": "object",
+          "properties": {
+            "name": { "type": "string" },
+            "phone": { "type": "string" }
+          },
+          "required": ["name", "phone"]
+        },
+        "answers": {
+          "type": "object",
+          "description": "Map of questionId to score"
+        }
+      },
+      "required": ["id", "submittedAt", "userData", "answers"]
+    }
+  },
+  "firestore": {
+    "submissions": {
+      "schema": "Submission",
+      "description": "Collection of all quiz submissions"
+    }
+  }
+}

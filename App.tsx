@@ -1,8 +1,39 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { ResponsiveContainer, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, Tooltip, BarChart, Bar, XAxis, YAxis, CartesianGrid, Cell } from 'recharts';
-import { Lock, User, Phone, CheckCircle, ChevronRight, ChevronLeft, BarChart2, Brain, Play, Printer, MessageCircle, AlertTriangle, ShieldCheck, Database, Trash2, Calendar, ArrowLeft, RotateCcw, Info } from 'lucide-react';
+import { Lock, User, Phone, CheckCircle, ChevronRight, ChevronLeft, BarChart2, Brain, Play, Printer, MessageCircle, AlertTriangle, ShieldCheck, Database, Trash2, Calendar, ArrowLeft, RotateCcw, Info, LogIn } from 'lucide-react';
 import { TRAVAS_DATA } from './constants';
 import { UserData, Answers, TravaResult, Submission } from './types';
+import { db, auth } from './firebase';
+import { collection, addDoc, onSnapshot, query, orderBy, deleteDoc, doc, getDocFromServer } from 'firebase/firestore';
+import { signInAnonymously, onAuthStateChanged, signInWithPopup, GoogleAuthProvider, User as FirebaseUser } from 'firebase/auth';
+
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId: string | undefined;
+    email: string | null | undefined;
+    emailVerified: boolean | undefined;
+    isAnonymous: boolean | undefined;
+    tenantId: string | null | undefined;
+    providerInfo: {
+      providerId: string;
+      displayName: string | null;
+      email: string | null;
+      photoUrl: string | null;
+    }[];
+  }
+}
 
 export default function App() {
   // Steps: 
@@ -20,34 +51,99 @@ export default function App() {
   // Admin State
   const [adminPassword, setAdminPassword] = useState('');
   const [dbHistory, setDbHistory] = useState<Submission[]>([]);
+  const [currentUser, setCurrentUser] = useState<FirebaseUser | null>(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   
   // Quiz Navigation State
   const [currentTravaIndex, setCurrentTravaIndex] = useState(0);
 
-  // Carregar Banco de Dados local ao iniciar
-  useEffect(() => {
-    const stored = localStorage.getItem('travas_db_v1');
-    if (stored) {
-      try {
-        setDbHistory(JSON.parse(stored));
-      } catch (e) {
-        console.error("Falha ao carregar histórico", e);
-      }
-    }
-  }, []);
-
-  const saveToHistory = (submission: Submission) => {
-    const newHistory = [submission, ...dbHistory];
-    setDbHistory(newHistory);
-    localStorage.setItem('travas_db_v1', JSON.stringify(newHistory));
+  const handleFirestoreError = (error: unknown, operationType: OperationType, path: string | null) => {
+    const errInfo: FirestoreErrorInfo = {
+      error: error instanceof Error ? error.message : String(error),
+      authInfo: {
+        userId: auth.currentUser?.uid,
+        email: auth.currentUser?.email,
+        emailVerified: auth.currentUser?.emailVerified,
+        isAnonymous: auth.currentUser?.isAnonymous,
+        tenantId: auth.currentUser?.tenantId,
+        providerInfo: auth.currentUser?.providerData.map(provider => ({
+          providerId: provider.providerId,
+          displayName: provider.displayName,
+          email: provider.email,
+          photoUrl: provider.photoURL
+        })) || []
+      },
+      operationType,
+      path
+    };
+    console.error('Firestore Error: ', JSON.stringify(errInfo));
+    setError(`Erro de permissão ou conexão no Firebase. Verifique se você é o administrador autorizado.`);
   };
 
-  const deleteFromHistory = (id: string, e: React.MouseEvent) => {
+  // Auth and Connection Test
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setCurrentUser(user);
+      setIsAuthReady(true);
+    });
+
+    // Test connection
+    const testConnection = async () => {
+      try {
+        await getDocFromServer(doc(db, 'test', 'connection'));
+      } catch (error) {
+        if (error instanceof Error && error.message.includes('the client is offline')) {
+          console.error("Please check your Firebase configuration.");
+          setError("O cliente está offline. Verifique sua conexão e configuração do Firebase.");
+        }
+      }
+    };
+    testConnection();
+
+    // Sign in anonymously for quiz takers
+    signInAnonymously(auth).catch(err => console.error("Anonymous auth failed", err));
+
+    return () => unsubscribe();
+  }, []);
+
+  // Sync with Firestore
+  useEffect(() => {
+    if (!isAuthReady || !currentUser) return;
+
+    // Only fetch history if we are in admin dashboard or results
+    if (step !== 'admin_dashboard' && step !== 'results') return;
+
+    const q = query(collection(db, 'submissions'), orderBy('submittedAt', 'desc'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const history = snapshot.docs.map(doc => ({
+        ...doc.data(),
+        id: doc.id
+      })) as Submission[];
+      setDbHistory(history);
+    }, (err) => {
+      handleFirestoreError(err, OperationType.LIST, 'submissions');
+    });
+
+    return () => unsubscribe();
+  }, [isAuthReady, currentUser, step]);
+
+  const saveToHistory = async (submission: Omit<Submission, 'id'>) => {
+    try {
+      await addDoc(collection(db, 'submissions'), submission);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, 'submissions');
+    }
+  };
+
+  const deleteFromHistory = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
     if (confirm('Tem certeza que deseja excluir este registro permanentemente?')) {
-      const newHistory = dbHistory.filter(item => item.id !== id);
-      setDbHistory(newHistory);
-      localStorage.setItem('travas_db_v1', JSON.stringify(newHistory));
+      try {
+        await deleteDoc(doc(db, 'submissions', id));
+      } catch (err) {
+        handleFirestoreError(err, OperationType.DELETE, `submissions/${id}`);
+      }
     }
   };
 
@@ -81,8 +177,7 @@ export default function App() {
   };
 
   const handleFinishQuiz = () => {
-    const submission: Submission = { 
-      id: Date.now().toString(),
+    const submission = { 
       submittedAt: new Date().toISOString(),
       userData, 
       answers 
@@ -120,11 +215,15 @@ export default function App() {
     return currentTrava.questions.every(q => answers[q.id] !== undefined);
   }, [answers, currentTravaIndex]);
 
-  const handleAdminLogin = () => {
-    if (adminPassword === 'admin') { 
-        setStep('admin_dashboard');
-    } else {
-      alert("Senha incorreta.");
+  const handleAdminLogin = async () => {
+    // We'll use Google Login for real security
+    const provider = new GoogleAuthProvider();
+    try {
+      await signInWithPopup(auth, provider);
+      setStep('admin_dashboard');
+    } catch (err) {
+      console.error("Login failed", err);
+      alert("Falha no login. Certifique-se de usar o e-mail administrativo autorizado.");
     }
   };
 
@@ -180,6 +279,21 @@ export default function App() {
       </header>
 
       <main className="max-w-3xl mx-auto px-4 pt-8">
+        
+        {error && (
+          <div className="mb-6 bg-red-50 border-l-4 border-red-500 p-4 rounded-r-xl flex gap-3 items-start animate-fade-in">
+            <AlertTriangle className="text-red-500 shrink-0" size={20} />
+            <div className="flex-1">
+              <p className="text-sm text-red-800 font-bold">{error}</p>
+              <button 
+                onClick={() => setError(null)}
+                className="text-xs text-red-600 underline mt-1 font-bold"
+              >
+                Fechar aviso
+              </button>
+            </div>
+          </div>
+        )}
         
         {/* STEP 1: INTRO & FORM */}
         {step === 'intro' && (
@@ -432,30 +546,17 @@ export default function App() {
                  </div>
                  <h2 className="text-2xl font-black text-slate-900">Acesso Restrito</h2>
                  <p className="text-sm text-slate-500 mt-2 font-medium">
-                   Digite a senha mestra para acessar o banco de dados
+                   Acesse com sua conta Google autorizada
                  </p>
                </div>
 
                <div className="space-y-6">
-                 <div className="space-y-2">
-                   <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Senha de Administrador</label>
-                   <div className="relative">
-                      <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={18} />
-                      <input
-                        type="password"
-                        className="w-full pl-11 pr-4 py-4 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-4 focus:ring-slate-900/5 outline-none font-medium transition-all"
-                        placeholder="••••••••"
-                        value={adminPassword}
-                        onChange={(e) => setAdminPassword(e.target.value)}
-                        onKeyDown={(e) => e.key === 'Enter' && handleAdminLogin()}
-                      />
-                   </div>
-                 </div>
                  <button
                     onClick={handleAdminLogin}
-                    className="w-full bg-slate-900 hover:bg-black text-white font-black py-4 rounded-2xl transition-all shadow-lg uppercase tracking-widest text-sm"
+                    className="w-full bg-slate-900 hover:bg-black text-white font-black py-4 rounded-2xl transition-all shadow-lg uppercase tracking-widest text-sm flex items-center justify-center gap-3"
                  >
-                   Entrar no Painel
+                   <LogIn size={20} />
+                   Entrar com Google
                  </button>
                </div>
              </div>
