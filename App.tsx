@@ -4,7 +4,7 @@ import { Lock, User, Phone, CheckCircle, ChevronRight, ChevronLeft, BarChart2, B
 import { TRAVAS_DATA } from './constants';
 import { UserData, Answers, TravaResult, Submission } from './types';
 import { db, auth } from './firebase';
-import { collection, addDoc, onSnapshot, query, orderBy, deleteDoc, doc, getDocFromServer } from 'firebase/firestore';
+import { collection, addDoc, onSnapshot, query, orderBy, deleteDoc, doc, getDocFromServer, setDoc, updateDoc } from 'firebase/firestore';
 import { signInAnonymously, onAuthStateChanged, signInWithPopup, GoogleAuthProvider, User as FirebaseUser } from 'firebase/auth';
 
 enum OperationType {
@@ -47,6 +47,7 @@ export default function App() {
   
   const [userData, setUserData] = useState<UserData>({ name: '', phone: '' });
   const [answers, setAnswers] = useState<Answers>({});
+  const [currentSubmissionId, setCurrentSubmissionId] = useState<string | null>(null);
   
   // Admin State
   const [adminPassword, setAdminPassword] = useState('');
@@ -128,13 +129,29 @@ export default function App() {
     return () => unsubscribe();
   }, [isAuthReady, currentUser, step]);
 
-  const saveToHistory = async (submission: Omit<Submission, 'id'>) => {
-    try {
-      await addDoc(collection(db, 'submissions'), submission);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.CREATE, 'submissions');
-    }
-  };
+  // Auto-Save Draft Progress as user answers or changes pages
+  useEffect(() => {
+    if (!currentSubmissionId) return;
+
+    const updateDraft = async () => {
+      try {
+        const docRef = doc(db, 'submissions', currentSubmissionId);
+        await updateDoc(docRef, {
+          answers,
+          lastActiveTravaIndex: currentTravaIndex,
+          submittedAt: new Date().toISOString()
+        });
+      } catch (err) {
+        console.error("Failed to auto-save draft:", err);
+      }
+    };
+
+    const timer = setTimeout(() => {
+      updateDraft();
+    }, 1500); // 1.5s debounce to keep database write count highly optimized
+
+    return () => clearTimeout(timer);
+  }, [answers, currentTravaIndex, currentSubmissionId]);
 
   const deleteFromHistory = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -147,10 +164,41 @@ export default function App() {
     }
   };
 
-  const handleStart = () => {
+  const handleStart = async () => {
     if (userData.name.trim().length > 0 && userData.phone.trim().length > 0) {
-      setStep('quiz');
-      window.scrollTo(0, 0);
+      try {
+        // Guarantee anonymous authentication is active
+        let currentUid = auth.currentUser?.uid;
+        if (!currentUid) {
+          try {
+            const cred = await signInAnonymously(auth);
+            currentUid = cred.user.uid;
+          } catch (authErr) {
+            console.error("Auth helper fallback failed", authErr);
+            currentUid = "anonymous";
+          }
+        }
+
+        const newDocRef = doc(collection(db, 'submissions'));
+        const submissionId = newDocRef.id;
+
+        const initialSubmission = {
+          id: submissionId,
+          submittedAt: new Date().toISOString(),
+          userData,
+          answers: {},
+          completed: false,
+          lastActiveTravaIndex: 0,
+          userId: currentUid || 'anonymous'
+        };
+
+        await setDoc(newDocRef, initialSubmission);
+        setCurrentSubmissionId(submissionId);
+        setStep('quiz');
+        window.scrollTo(0, 0);
+      } catch (err) {
+        handleFirestoreError(err, OperationType.CREATE, 'submissions');
+      }
     } else {
       alert('Por favor, preencha seu nome e telefone para iniciar.');
     }
@@ -176,13 +224,38 @@ export default function App() {
     }
   };
 
-  const handleFinishQuiz = () => {
-    const submission = { 
-      submittedAt: new Date().toISOString(),
-      userData, 
-      answers 
-    };
-    saveToHistory(submission);
+  const handleFinishQuiz = async () => {
+    if (currentSubmissionId) {
+      try {
+        const docRef = doc(db, 'submissions', currentSubmissionId);
+        await updateDoc(docRef, {
+          answers,
+          lastActiveTravaIndex: currentTravaIndex,
+          completed: true,
+          submittedAt: new Date().toISOString()
+        });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.UPDATE, `submissions/${currentSubmissionId}`);
+      }
+    } else {
+      // Fallback in case of draft reference absence
+      const newDocRef = doc(collection(db, 'submissions'));
+      const submissionId = newDocRef.id;
+      const submission = {
+        id: submissionId,
+        submittedAt: new Date().toISOString(),
+        userData,
+        answers,
+        completed: true,
+        lastActiveTravaIndex: currentTravaIndex,
+        userId: auth.currentUser?.uid || 'anonymous'
+      };
+      try {
+        await setDoc(newDocRef, submission);
+      } catch (err) {
+        handleFirestoreError(err, OperationType.CREATE, 'submissions');
+      }
+    }
     setStep('submission');
     window.scrollTo(0, 0);
   };
@@ -190,6 +263,7 @@ export default function App() {
   const handleNewAnalysis = () => {
     setUserData({ name: '', phone: '' });
     setAnswers({});
+    setCurrentSubmissionId(null);
     setCurrentTravaIndex(0);
     setStep('intro');
     window.scrollTo(0, 0);
@@ -605,7 +679,14 @@ export default function App() {
                            {item.userData.name.charAt(0).toUpperCase()}
                          </div>
                          <div>
-                           <h4 className="font-black text-slate-900 text-lg group-hover:text-blue-600 transition-colors">{item.userData.name}</h4>
+                           <div className="flex items-center gap-3 flex-wrap">
+                             <h4 className="font-black text-slate-900 text-lg group-hover:text-blue-600 transition-colors">{item.userData.name}</h4>
+                             {item.completed ? (
+                               <span className="bg-green-50 text-green-700 text-[10px] px-2.5 py-0.5 rounded-full font-black uppercase tracking-wider border border-green-200">Completo</span>
+                             ) : (
+                               <span className="bg-amber-50 text-amber-700 text-[10px] px-2.5 py-0.5 rounded-full font-black uppercase tracking-wider border border-amber-200">Incompleto (Trava: {item.lastActiveTravaIndex !== undefined ? item.lastActiveTravaIndex + 1 : 1}/10)</span>
+                             )}
+                           </div>
                            <div className="flex items-center gap-4 text-xs text-slate-400 font-bold uppercase tracking-wider mt-1">
                              <span className="flex items-center gap-1.5"><Phone size={14}/> {item.userData.phone}</span>
                              <span className="flex items-center gap-1.5"><Calendar size={14}/> {new Date(item.submittedAt || Date.now()).toLocaleDateString('pt-BR')}</span>

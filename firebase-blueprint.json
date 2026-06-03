@@ -18,9 +18,11 @@
         "answers": {
           "type": "object",
           "description": "Map of questionId to score"
-        }
+        },
+        "completed": { "type": "boolean" },
+        "lastActiveTravaIndex": { "type": "number" }
       },
-      "required": ["id", "submittedAt", "userData", "answers"]
+      "required": ["id", "submittedAt", "userData", "answers", "completed", "lastActiveTravaIndex"]
     }
   },
   "firestore": {

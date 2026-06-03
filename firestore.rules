@@ -2,20 +2,11 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     // ===============================================================
-    // Assumed Data Model
+    // Global Safety Net (Default Deny Catch-All)
     // ===============================================================
-    //
-    // Collection: submissions
-    // Document ID: auto-generated or submission ID
-    // Fields:
-    //   - id: string (required)
-    //   - submittedAt: string (ISO date, required)
-    //   - userData: map (required)
-    //     - name: string (required)
-    //     - phone: string (required)
-    //   - answers: map (required, questionId -> number)
-    //
-    // ===============================================================
+    match /{document=**} {
+      allow read, write: if false;
+    }
 
     // ===============================================================
     // Helper Functions
@@ -30,7 +21,7 @@ service cloud.firestore {
     }
 
     function isValidSubmission(data) {
-      return data.keys().hasAll(['id', 'submittedAt', 'userData', 'answers']) &&
+      return data.keys().hasAll(['id', 'submittedAt', 'userData', 'answers', 'completed', 'lastActiveTravaIndex', 'userId']) &&
              data.id is string &&
              data.submittedAt is string &&
              data.userData is map &&
@@ -40,16 +31,27 @@ service cloud.firestore {
              data.userData.phone is string &&
              data.userData.phone.size() > 0 &&
              data.userData.phone.size() < 30 &&
-             data.answers is map;
+             data.answers is map &&
+             data.completed is bool &&
+             (data.lastActiveTravaIndex is int || data.lastActiveTravaIndex is float) &&
+             data.userId is string;
     }
 
     match /submissions/{submissionId} {
-      // Allow anyone to create a submission (even unauthenticated for public quiz, 
-      // but we'll use anonymous auth in the app to be safer)
-      allow create: if isAuthenticated() && isValidSubmission(request.resource.data);
-      
-      // Only admin can read, update or delete submissions
-      allow read, update, delete: if isAdmin();
+      // Allow creator (anonymous or authenticated) to create and update their own document
+      allow create: if isAuthenticated() && 
+                    isValidSubmission(request.resource.data) && 
+                    request.resource.data.userId == request.auth.uid;
+                    
+      allow update: if isAuthenticated() && 
+                    isValidSubmission(request.resource.data) && 
+                    resource.data.userId == request.auth.uid &&
+                    request.resource.data.userId == request.auth.uid;
+
+      // Only admin can list/read all or delete
+      // Allow user to read their own document if needed
+      allow read: if isAdmin() || (isAuthenticated() && resource.data.userId == request.auth.uid);
+      allow delete: if isAdmin();
     }
   }
 }

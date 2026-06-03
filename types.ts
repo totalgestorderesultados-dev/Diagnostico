@@ -28,4 +28,6 @@ export interface Submission {
   submittedAt: string;
   userData: UserData;
   answers: Answers;
+  completed?: boolean;
+  lastActiveTravaIndex?: number;
 }
